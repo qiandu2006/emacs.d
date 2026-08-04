@@ -22,7 +22,8 @@
 ;; Language Server (eglot - builtin since v29)
 ;; 只对确实配了服务器的语言自动启动，避免在没有 LSP 的模式下反复报连接失败。
 ;; 新增语言时，把对应的 <mode> 加进下面的 :hook 列表即可。
-;; 当前各语言服务器：java=jdtls, rust=rust-analyzer, c/c++=clangd, lisp=cl-lsp,
+;; Common Lisp 走 SLY（见 init-lisp.el），不挂 eglot。
+;; 当前各语言服务器：java=jdtls, rust=rust-analyzer, c/c++=clangd,
 ;; go=gopls（尚未安装，装好后即可生效）。
 (use-package eglot
   ;; 对于 Emacs 29+ 是内置的，ensure t 可以兼容旧版本
@@ -31,13 +32,8 @@
 	  go-ts-mode
 	  rust-ts-mode
 	  c-ts-mode
-	  c++-ts-mode
-	  lisp-mode) . eglot-ensure)
+	  c++-ts-mode) . eglot-ensure)
   :config
-  ;; Common Lisp language server (CL-LSP communicates over stdio).
-  (add-to-list 'eglot-server-programs
-               '(lisp-mode . ("/Users/fred.du/.emacs.d/bin/cl-lsp" "--stdio")))
-
   ;; Java: jdtls 1.60 自身要求 JDK 21+ 运行，而项目按 JavaSE-11 编译，二者必须分开指定。
   ;; Lombok 必须以 javaagent 挂载，否则 @Slf4j/@RequiredArgsConstructor 生成的成员一律报未解析。
   (add-to-list 'eglot-server-programs
