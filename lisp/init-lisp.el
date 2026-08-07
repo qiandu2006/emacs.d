@@ -39,7 +39,6 @@
   :ensure t
   :defer t
   :hook ((lisp-mode . enable-paredit-mode)
-         (sly-mrepl-mode . enable-paredit-mode)
          (sly-mode . enable-paredit-mode)))
 
 (provide 'init-lisp)
