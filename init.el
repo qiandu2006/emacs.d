@@ -66,6 +66,35 @@
 (require 'opam-user-setup "~/.emacs.d/opam-user-setup.el")
 ;; ## end of OPAM user-setup addition for emacs / base ## keep this line
 
+(require 'url-parse)
+(require 'url-util)
+
+(defun my/extract-url-info (url)
+  "提取 URL 的 Host 与各个 Query 参数，并在独立 Buffer 中清晰展示。"
+  (interactive
+   (list (read-string "URL: " (thing-at-point 'url t))))
+  (let* ((parsed (url-generic-parse-url (string-trim url)))
+         (host (url-host parsed))
+         (full-path (url-filename parsed))
+         (query-str (when (string-match "\\?\\(.*\\)" full-path)
+                      (match-string 1 full-path)))
+         (params (when query-str
+                   ;; 解析 query 字符串并进行 URL 解码
+                   (url-parse-query-string query-str nil t))))
+    (with-current-buffer (get-buffer-create "*URL Info*")
+      (erase-buffer)
+      (insert (format "🔗 原始 URL:\n   %s\n\n" url))
+      (insert (format "🌐 Host (域名):\n   %s\n\n" (or host "(无 Host)")))
+      (insert "📋 参数列表 (Query Params):\n")
+      (if (null params)
+          (insert "   (无参数)\n")
+        (dolist (param params)
+          (let ((key (car param))
+                (val (cadr param)))
+            (insert (format "   • %-20s = %s\n" key val)))))
+      (special-mode)
+      (display-buffer (current-buffer)))))
+
 (provide 'init)
 
 ;;; init.el ends here
