@@ -12,7 +12,7 @@
 (use-package cnfonts
   :ensure t
   :custom
-  (cnfonts-default-fontsize 18)
+  (cnfonts-default-fontsize 14)
   :config
   (cnfonts-mode 1))
 (use-package rainbow-delimiters
