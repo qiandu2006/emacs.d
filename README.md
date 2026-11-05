@@ -69,7 +69,7 @@ macOS 默认对图形进程的文件描述符限制仅 256，在大型代码工�
 
 ## 三、 飞书个人会话双向远程通信网关 (方案 B)
 
-专为**无法创建企业级 Bot 应用**的个人打造，通过 `lark-cli` 直接连接飞书 **“给自己的会话窗口（Chat with Myself）”** 。
+专为**无法创建企业级 Bot 应用**的个人打造，通过 `lark-cli` 直接连接飞书**“给自己的会话窗口（Chat with Myself）”**。
 
 ### 1. 启动与管理
 - **启动网关**：在任意 Agent-Shell 缓冲区中按下 `C-c a L`（或 `M-x my/agent-shell-lark-start`）；
@@ -108,12 +108,28 @@ macOS 默认对图形进程的文件描述符限制仅 256，在大型代码工�
 | **`C-c a l`** | 全局 | 启动 Claude Code 专属会话 (`claude-agent-acp`) |
 | **`C-c a u`** | 全局 | 启动 Cursor Agent 专属会话 (`agent acp`) |
 | **`C-c a o`** | 全局 | 启动 OpenAI Codex 专属会话 (`codex-acp`) |
-| **`C-c a s`** | 全局 | 快速在活动的 Agent 缓冲区之间切换 |
+| **`C-u C-c a o`** | 全局 | **交互式指定模型与推理深度启动 Codex** (如 6 Astra / 6.1 Sol / high) |
+| **`C-c a s`** | 全局 | 快速在活动的 Agent 缓冲区之间切换 (`agent-shell-switch-buffer`) |
+| **`C-c a r`** | 全局 | **按需检索并切换/恢复任意历史会话**（跨工程、跨天数全量检索） |
 | **`C-c a e`** | 代码 / Magit | 上下文感知代码解读 / Diff 差异审阅（支持选区、函数、Diff Hunk） |
 | **`C-c a L`** | 全局 | 启动飞书个人会话同步网关 (Scheme B) |
 | **`C-c a S`** | 全局 | 停止飞书个人会话同步网关 |
 | `M-x my/agent-shell-fix-auth` | 全局 | 同步 Claude 凭证至 macOS Keychain 并热重载会话 |
 | `M-x my/agent-shell-lark-status` | 全局 | 查看飞书个人会话网关运行状态 |
+
+#### Agent-Shell 会话内模型、推理深度与历史会话切换快捷键 (在 `*Codex*` 等会话缓冲区生效)
+
+| 快捷键 / 触发方式 | 功能描述 | 详细说明 |
+| :--- | :--- | :--- |
+| **`C-c C-r`** | **切换/恢复历史会话** (`my/agent-shell-switch-session`) | **实时全量拉取历史会话（支持 10 天、30 天前各工程对话）**，按标题/日期/项目模糊检索一键恢复重放 |
+| ↳ `C-u C-c C-r` | 覆盖当前缓冲区恢复 | 若带前缀参数，将选中的历史会话直接恢复并载入到当前窗口 |
+| **`C-c C-v`** | 切换模型 (`agent-shell-set-session-model`) | 呼出 Minibuffer 选择可用模型（如 `6 Astra`、`6.1 Sol` 等） |
+| **`C-c C-t`** | 切换推理深度 (`agent-shell-set-session-thought-level`) | 切换思考/推理强度：`low` / `medium` / `high` / `xhigh` / `max` / `ultra` |
+| **`C-c C-s`** | 切换任意会话配置 (`agent-shell-set-session-config-option`) | 可修改 `model`、`reasoning_effort`、`mode`、`fast-mode` 等 |
+| **`C-c C-m`** | 切换权限运行模式 (`agent-shell-set-session-mode`) | 切换 `read-only` / `workspace-write` / `agent` / `full-access` |
+| **`C-c ?` / `C-c C-h`** | 呼出控制菜单 (`agent-shell-help-menu`) | 弹窗展示全量快捷键面板，按 `v` 换模型、按 `t` 调推理、按 `m` 换模式 |
+| **鼠标点击 Header 栏** | 直达切换 | 在 Buffer 顶部状态行直接用鼠标点击模型名 `[6.1 Sol]` 即可换模型 |
+| **输入框斜杠命令** | 即时触发 | 输入 **/session**、**/history**、**/resume** 切换历史会话；输入 **/model** 换模型；输入 **/thought** 换思考深度 |
 
 ---
 
