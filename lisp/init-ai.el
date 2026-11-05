@@ -163,11 +163,16 @@ Display-only: transcripts still receive the complete output.")
 ;; 4. Cursor: use `agent acp`
 (setq agent-shell-cursor-acp-command '("agent" "acp"))
 
+;; Replay entire previous conversation, tool execution, and thinking steps when resuming (Feature 2)
+(setq agent-shell-session-restore-verbosity 'full)
+
 ;; Keybindings inside agent-shell-mode-map
 (with-eval-after-load 'agent-shell
   (define-key agent-shell-mode-map (kbd "C-c ?") #'agent-shell-help-menu)
   (define-key agent-shell-mode-map (kbd "C-c C-h") #'agent-shell-help-menu)
-  (define-key agent-shell-mode-map (kbd "C-c C-r") #'my/agent-shell-switch-session))
+  (define-key agent-shell-mode-map (kbd "C-c C-r") #'my/agent-shell-switch-session)
+  (define-key agent-shell-mode-map (kbd "C-c C-m") #'my/agent-shell-set-model)
+  (define-key agent-shell-mode-map (kbd "C-c C-t") #'my/agent-shell-set-thought-level))
 
 ;; Historical Session Discovery & Switching (Cross-Project & Pagination)
 (defcustom my/agent-shell-list-all-projects-sessions t
@@ -205,7 +210,7 @@ otherwise, open the historical session in a new dedicated buffer."
      :state state
      :cwd nil
      :buffer shell-buf
-     :page-limit 10
+     :page-limit 50
      :on-success
      (lambda (raw-sessions)
        (run-at-time
@@ -222,7 +227,8 @@ otherwise, open the historical session in a new dedicated buffer."
                                 (date-str (if date-raw (agent-shell--format-session-date date-raw) "Unknown date"))
                                 (cwd (or (map-elt s 'cwd) ""))
                                 (dir-name (if (string-empty-p cwd) "-" (file-name-nondirectory (directory-file-name cwd))))
-                                (sid (substring (or (map-elt s 'sessionId) "") 0 8))
+                                (sid-raw (or (map-elt s 'sessionId) ""))
+                                (sid (if (> (length sid-raw) 8) (substring sid-raw 0 8) sid-raw))
                                 (label (format "%-42s  %-15s  %-16s  (%s)"
                                                (truncate-string-to-width title 42 0 nil "…")
                                                date-str
@@ -230,9 +236,12 @@ otherwise, open the historical session in a new dedicated buffer."
                                                sid)))
                            (cons label s)))
                        sorted))
-                     (selection (completing-read "Switch to historical session: "
-                                                 (mapcar #'car choices)
-                                                 nil t))
+                     (selection (let ((ivy-initial-inputs-alist nil)
+                                      (ivy--default nil)
+                                      (this-command 'my/agent-shell-switch-session))
+                                  (completing-read "Switch to historical session: "
+                                                   (mapcar #'car choices)
+                                                   nil t nil nil nil)))
                      (selected-session (cdr (assoc selection choices))))
                 (when selected-session
                   (let* ((sid (map-elt selected-session 'sessionId))
@@ -263,6 +272,104 @@ otherwise, open the historical session in a new dedicated buffer."
      :on-failure
      (lambda (err _)
        (message "Failed to fetch historical sessions: %s" err)))))
+
+;; Slash command completion support (interactive dropdown candidates)
+(defvar my/agent-shell-builtin-commands
+  '(("history" . "切换/恢复历史会话 (全工程全量检索)")
+    ("session" . "切换/恢复历史会话 (全工程全量检索)")
+    ("resume"  . "恢复上一轮历史会话")
+    ("model"   . "切换当前大模型 (如 6.1 Sol / 6 Astra)")
+    ("thought" . "切换推理深度 (low / medium / high / max)")
+    ("effort"  . "切换思考推理等级")
+    ("mode"    . "切换权限模式 (read-only / workspace-write / full-access)")
+    ("help"    . "呼出命令控制面板与菜单")
+    ("clear"   . "清空当前终端屏幕")
+    ("compact" . "压缩上下文会话历史")
+    ("lark"    . "启动飞书远程网关"))
+  "Default built-in slash commands for agent-shell completion.")
+
+(defun my/agent-shell--clean-prompt-input ()
+  "Reliably clear any text typed at the current prompt."
+  (let ((start (or (and (fboundp 'agent-shell--prompt-input-start)
+                        (agent-shell--prompt-input-start))
+                   (and (bound-and-true-p comint-last-prompt)
+                        (marker-position (cdr comint-last-prompt)))
+                   (and (fboundp 'comint-line-beginning-position)
+                        (comint-line-beginning-position)))))
+    (when (and start (< start (point-max)))
+      (delete-region start (point-max))))
+  (when (fboundp 'agent-shell--clear-prompt-input)
+    (ignore-errors (agent-shell--clear-prompt-input))))
+
+(defun my/agent-shell--capf-exit-dispatch (string status)
+  "Execute slash command when STATUS is `finished', or insert space otherwise."
+  (if (eq status 'finished)
+      (let ((cmd (string-trim (replace-regexp-in-string "^/" "" string))))
+        (cond
+         ((member cmd '("history" "session" "resume"))
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-switch-session))
+         ((string= cmd "model")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-set-model))
+         ((member cmd '("thought" "effort"))
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-set-thought-level))
+         ((string= cmd "mode")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-set-mode))
+         ((member cmd '("help" "menu" "?"))
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'agent-shell-help-menu))
+         ((string= cmd "clear")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil (if (fboundp 'agent-shell-clear-buffer)
+                                    #'agent-shell-clear-buffer
+                                  #'shell-maker-clear-buffer)))
+         ((string= cmd "lark")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-lark-start))
+         (t
+          (insert " "))))
+    nil))
+
+(defun my/agent-shell--command-completion-at-point-advice (orig-fn &rest args)
+  "Augment slash command completion with built-in commands (/history, /model, etc.)."
+  (when-let* ((bounds (agent-shell--completion-bounds "[:alnum:]_-" ?/))
+              ((agent-shell-completion--command-start-p (1- (map-elt bounds :start))))
+              (source (or (and (buffer-live-p agent-shell-completion--shell-buffer)
+                               agent-shell-completion--shell-buffer)
+                          (agent-shell--shell-buffer :no-error t :no-create t))))
+    (let* ((state (and (buffer-live-p source) (buffer-local-value 'agent-shell--state source)))
+           (acp-commands (and state (map-elt state :available-commands)))
+           (acp-descs (mapcar (lambda (c)
+                                (cons (map-elt c 'name)
+                                      (map-elt c 'description)))
+                              acp-commands))
+           (all-descs (append my/agent-shell-builtin-commands acp-descs))
+           (table (mapcar #'car all-descs)))
+      (list (map-elt bounds :start)
+            (map-elt bounds :end)
+            table
+            :exclusive t
+            :company-prefix-length t
+            :annotation-function
+            (lambda (name)
+              (when-let* ((desc (cdr (assoc name all-descs))))
+                (concat "  " desc)))
+            :company-kind (lambda (_) 'function)
+            :exit-function #'my/agent-shell--capf-exit-dispatch))))
+
+(unless (advice-member-p #'my/agent-shell--command-completion-at-point-advice 'agent-shell--command-completion-at-point)
+  (advice-add 'agent-shell--command-completion-at-point :around #'my/agent-shell--command-completion-at-point-advice))
+
+;; Ensure company completion in agent-shell triggers instantly on /
+(add-hook 'agent-shell-mode-hook
+          (lambda ()
+            (setq-local company-minimum-prefix-length 1)
+            (setq-local company-idle-delay 0.05)
+            (when (fboundp 'company-mode)
+              (company-mode 1))))
 
 ;; Codex Model Choices and Interactive Starter
 (defvar my/agent-shell-openai-available-models
@@ -299,30 +406,175 @@ model and reasoning effort before launching."
         (agent-shell-openai-start-codex))
     (agent-shell-openai-start-codex)))
 
+(defun my/agent-shell-set-thought-level ()
+  "Interactively select and change reasoning effort (thought level).
+Guarantees clean Ivy completion without prompt text pollution,
+and supports both live ACP config options and fallback options."
+  (interactive)
+  (let* ((shell-buf (if (derived-mode-p 'agent-shell-mode)
+                        (current-buffer)
+                      (seq-first (agent-shell-buffers))))
+         (state (and (buffer-live-p shell-buf)
+                     (buffer-local-value 'agent-shell--state shell-buf))))
+    (unless (and state (map-elt state :client))
+      (user-error "No active agent-shell connection. Please start an agent first (e.g. C-c a o)"))
+    (with-current-buffer shell-buf
+      (let* ((option (agent-shell--config-option-by-category state "thought_level"))
+             (acp-levels (agent-shell--get-available-thought-levels state))
+             (current-id (or (agent-shell--current-thought-level-id state)
+                             (map-elt option :current-value)
+                             "medium"))
+             (choices (if acp-levels
+                          (mapcar (lambda (v)
+                                    (cons (format "%-8s  (%s)"
+                                                  (map-elt v :name)
+                                                  (or (map-elt v :description) ""))
+                                          (map-elt v :value)))
+                                  acp-levels)
+                        (mapcar (lambda (lvl)
+                                  (cons (capitalize lvl) lvl))
+                                my/agent-shell-openai-available-thought-levels)))
+             (default-label (or (car (seq-find (lambda (c) (string= (cdr c) current-id)) choices))
+                                (caar choices)))
+             (selection (let ((ivy-initial-inputs-alist nil)
+                              (ivy--default nil)
+                              (this-command 'my/agent-shell-set-thought-level))
+                          (completing-read "Set thought level (reasoning effort): "
+                                           (mapcar #'car choices)
+                                           nil t nil nil default-label)))
+             (selected-val (cdr (assoc selection choices))))
+        (when selected-val
+          (if (and option (map-elt option :id))
+              (agent-shell--set-session-config-option
+               :config-id (map-elt option :id)
+               :value selected-val
+               :on-success (lambda ()
+                             (message "Thought level (reasoning effort) set to: %s" selected-val))
+               :on-failure (lambda (err _)
+                             (message "Failed to set thought level: %s" err)))
+            (setq agent-shell-openai-default-config-options
+                  `(("reasoning_effort" . ,selected-val)))
+            (message "Thought level set to: %s (applied to session)" selected-val)))))))
+
+(defun my/agent-shell-set-model ()
+  "Interactively select and change LLM model.
+Guarantees clean Ivy completion without prompt text pollution,
+and supports live ACP model options."
+  (interactive)
+  (let* ((shell-buf (if (derived-mode-p 'agent-shell-mode)
+                        (current-buffer)
+                      (seq-first (agent-shell-buffers))))
+         (state (and (buffer-live-p shell-buf)
+                     (buffer-local-value 'agent-shell--state shell-buf))))
+    (unless (and state (map-elt state :client))
+      (user-error "No active agent-shell connection. Please start an agent first (e.g. C-c a o)"))
+    (with-current-buffer shell-buf
+      (let* ((available (agent-shell--get-available-models state))
+             (current-id (agent-shell--current-model-id state))
+             (choices (if available
+                          (mapcar (lambda (m)
+                                    (cons (format "%-24s  %s"
+                                                  (map-elt m :name)
+                                                  (or (map-elt m :description) ""))
+                                          (map-elt m :model-id)))
+                                  available)
+                        (mapcar (lambda (m)
+                                  (cons (car m) (cdr m)))
+                                my/agent-shell-openai-available-models)))
+             (default-choice (or (car (seq-find (lambda (c) (equal (cdr c) current-id)) choices))
+                                 (caar choices)))
+             (selection (let ((ivy-initial-inputs-alist nil)
+                              (ivy--default nil)
+                              (this-command 'my/agent-shell-set-model))
+                          (completing-read "Set model: "
+                                           (mapcar #'car choices)
+                                           nil t nil nil default-choice)))
+             (selected-id (cdr (assoc selection choices))))
+        (when selected-id
+          (agent-shell--config-option-set-model-id
+           :model-id selected-id
+           :on-success (lambda ()
+                         (message "Model switched to: %s" selected-id))))))))
+
+(defun my/agent-shell-set-mode ()
+  "Interactively select and change session mode (read-only / workspace-write / full-access)."
+  (interactive)
+  (let* ((shell-buf (if (derived-mode-p 'agent-shell-mode)
+                        (current-buffer)
+                      (seq-first (agent-shell-buffers))))
+         (state (and (buffer-live-p shell-buf)
+                     (buffer-local-value 'agent-shell--state shell-buf))))
+    (unless (and state (map-elt state :client))
+      (user-error "No active agent-shell connection. Please start an agent first (e.g. C-c a o)"))
+    (with-current-buffer shell-buf
+      (let* ((modes (or (map-elt state :modes)
+                        (agent-shell--get-available-modes state)))
+             (current-id (agent-shell--current-mode-id state))
+             (choices (mapcar (lambda (m)
+                                (cons (format "%-20s  %s"
+                                              (map-elt m :name)
+                                              (or (map-elt m :description) ""))
+                                      (map-elt m :id)))
+                              modes))
+             (default-choice (or (car (seq-find (lambda (c) (equal (cdr c) current-id)) choices))
+                                 (caar choices)))
+             (selection (let ((ivy-initial-inputs-alist nil)
+                              (ivy--default nil)
+                              (this-command 'my/agent-shell-set-mode))
+                          (completing-read "Set mode: "
+                                           (mapcar #'car choices)
+                                           nil t nil nil default-choice)))
+             (selected-id (cdr (assoc selection choices))))
+        (when selected-id
+          (agent-shell--set-session-mode-id
+           :mode-id selected-id
+           :on-success (lambda ()
+                         (message "Mode switched to: %s" selected-id))))))))
+
 ;; Slash commands support in agent-shell prompt
 (defun my/agent-shell-slash-command-advice (orig-fn &rest args)
-  "Intercept slash commands typed directly into prompt: /session, /model, /thought, /mode, /help."
-  (if (and (derived-mode-p 'agent-shell-mode)
-           (fboundp 'comint-line-beginning-position))
-      (let* ((input (string-trim (buffer-substring-no-properties
-                                  (comint-line-beginning-position)
-                                  (point-max)))))
+  "Intercept slash commands typed directly into prompt: /session, /history, /model, /thought, /mode, /help, /clear, /lark."
+  (if (derived-mode-p 'agent-shell-mode)
+      (let* ((raw (or (and (fboundp 'agent-shell--prompt-input)
+                           (agent-shell--prompt-input))
+                      (and (fboundp 'comint-line-beginning-position)
+                           (buffer-substring-no-properties
+                            (comint-line-beginning-position)
+                            (point-max)))
+                      ""))
+             ;; Strip prompt characters like ❯ or > or spaces
+             (input (string-trim (replace-regexp-in-string "^[❯>\\s-]+" "" (string-trim raw)))))
         (cond
-         ((or (string= input "/session") (string= input "/history") (string= input "/resume"))
-          (delete-region (comint-line-beginning-position) (point-max))
-          (call-interactively #'my/agent-shell-switch-session))
-         ((string= input "/model")
-          (delete-region (comint-line-beginning-position) (point-max))
-          (call-interactively #'agent-shell-set-session-model))
-         ((or (string= input "/thought") (string= input "/effort"))
-          (delete-region (comint-line-beginning-position) (point-max))
-          (call-interactively #'agent-shell-set-session-thought-level))
-         ((string= input "/mode")
-          (delete-region (comint-line-beginning-position) (point-max))
-          (call-interactively #'agent-shell-set-session-mode))
+         ((or (string= input "/session") (string= input "/history") (string= input "/resume")
+              (string-prefix-p "/session " input) (string-prefix-p "/history " input) (string-prefix-p "/resume " input))
+          (my/agent-shell--clean-prompt-input)
+          (setq this-command 'my/agent-shell-switch-session)
+          (run-at-time 0.05 nil #'my/agent-shell-switch-session))
+         ((or (string= input "/model") (string-prefix-p "/model " input))
+          (my/agent-shell--clean-prompt-input)
+          (setq this-command 'my/agent-shell-set-model)
+          (run-at-time 0.05 nil #'my/agent-shell-set-model))
+         ((or (string= input "/thought") (string= input "/effort")
+              (string-prefix-p "/thought " input) (string-prefix-p "/effort " input))
+          (my/agent-shell--clean-prompt-input)
+          (setq this-command 'my/agent-shell-set-thought-level)
+          (run-at-time 0.05 nil #'my/agent-shell-set-thought-level))
+         ((or (string= input "/mode") (string-prefix-p "/mode " input))
+          (my/agent-shell--clean-prompt-input)
+          (setq this-command 'my/agent-shell-set-mode)
+          (run-at-time 0.05 nil #'my/agent-shell-set-mode))
          ((or (string= input "/help") (string= input "/menu") (string= input "/?"))
-          (delete-region (comint-line-beginning-position) (point-max))
-          (call-interactively #'agent-shell-help-menu))
+          (my/agent-shell--clean-prompt-input)
+          (setq this-command 'agent-shell-help-menu)
+          (run-at-time 0.05 nil #'agent-shell-help-menu))
+         ((string= input "/clear")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil (if (fboundp 'agent-shell-clear-buffer)
+                                    #'agent-shell-clear-buffer
+                                  #'shell-maker-clear-buffer)))
+         ((string= input "/lark")
+          (my/agent-shell--clean-prompt-input)
+          (run-at-time 0.05 nil #'my/agent-shell-lark-start))
          (t
           (apply orig-fn args))))
     (apply orig-fn args)))
@@ -337,6 +589,9 @@ model and reasoning effort before launching."
 (define-key my/agent-shell-prefix-map (kbd "a") #'agent-shell)
 (define-key my/agent-shell-prefix-map (kbd "s") #'agent-shell-switch-buffer)
 (define-key my/agent-shell-prefix-map (kbd "r") #'my/agent-shell-switch-session)
+(define-key my/agent-shell-prefix-map (kbd "t") #'my/agent-shell-set-thought-level)
+(define-key my/agent-shell-prefix-map (kbd "m") #'my/agent-shell-set-model)
+(define-key my/agent-shell-prefix-map (kbd "M") #'my/agent-shell-set-mode)
 (define-key my/agent-shell-prefix-map (kbd "g") #'agent-shell-antigravity-start-agent)
 (define-key my/agent-shell-prefix-map (kbd "l") #'agent-shell-anthropic-start-claude-code)
 (define-key my/agent-shell-prefix-map (kbd "u") #'agent-shell-cursor-start-agent)
@@ -354,6 +609,9 @@ model and reasoning effort before launching."
     "C-c a a" "agent-shell (default)"
     "C-c a s" "switch agent buffer"
     "C-c a r" "resume/switch session (history)"
+    "C-c a t" "set thought level / effort"
+    "C-c a m" "switch model"
+    "C-c a M" "switch mode (permissions)"
     "C-c a g" "start antigravity"
     "C-c a l" "start claude code"
     "C-c a u" "start cursor agent"
