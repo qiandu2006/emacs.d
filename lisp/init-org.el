@@ -6,8 +6,8 @@
 (use-package org
   :ensure nil
   :hook (org-mode . org-num-mode)
-  ;; ⚠️ 核心修复 1: Agenda 和 Capture 必须是全局快捷键，随时随地呼出
-  :bind (("C-c a" . org-agenda)
+  ;; Agenda 使用 C-c A（保留 C-c a 为 Agent-Shell 前缀），Capture 使用 C-c c
+  :bind (("C-c A" . org-agenda)
          ("C-c c" . org-capture)
          :map org-mode-map
          ("C-c C-x C-j" . org-clock-goto)) ; 方便一键跳回正在计时的任务
