@@ -42,11 +42,25 @@
    - `C-c a a`：启动/切换通用 `agent-shell`；
    - `C-c a l`：启动 Claude Code；
    - `C-c a u`：启动 Cursor Agent；
-   - `C-c a o`：启动 OpenAI Codex；
-   - `C-c a s`：在活动的 Agent Buffers 之间快速切换。
-5. **防御性 Buffer 保护 (Display Cap)**：
+   - `C-c a o`：启动 OpenAI Codex（支持 `C-u C-c a o` 交互式指定模型启动）；
+   - `C-c a s`：在活动的 Agent Buffers 之间快速切换；
+   - `C-c a r`：按需检索并切换/恢复任意历史会话（跨工程、跨时间全量回溯）。
+5. **Codex 会话内模型/推理深度动态切换**：
+   - 会话中通过 `C-c C-v` 切换模型，通过 `C-c C-t` 调节推理深度（`thought_level`）。
+   - 协议适配：针对 `codex-acp` (v2.5.0) 的 `session/set_config_option` 规范，解耦模型名（`gpt-6-astra`、`gpt-6.1-sol`）与推理强度（`low` ~ `ultra`）。
+   - 输入框斜杠命令（`/model`、`/thought`、`/mode`、`/help`）注入拦截支持。
+6. **跨工程历史会话全量按需回溯 (Historical Session Resuming)**：
+   - **痛点根因**：ACP 协议在 `session/list` 时若携带当前目录 `:cwd`，服务端将严格过滤仅当前目录的历史会话。当在 `~/.emacs.d` 打开终端时，将无法看到 10 天前在其他工程（如业务代码目录）的对话记录。
+   - **穿透设计**：通过 advice 扩展 `agent-shell--list-sessions`，解除 `:cwd` 强制绑定（传 `nil`），开启全工程跨目录穿透。
+   - **分页全量抓取**：自动递归消费 `nextCursor`，抓取多页历史记录（支持 10 天乃至数月前的历史对话）。
+   - **会话无缝恢复与工作目录自适应**：
+     - 用户通过模糊检索（匹配标题、日期、项目名称）选中历史会话。
+     - 自动调用 `session/load` 触发 ACP 全量历史重放（含 User Prompt、Agent Thought、Tool Output 等）。
+     - 新缓冲区的 `default-directory` 自动设置为该历史会话归属的真实项目路径，缓冲区重命名为 `*Codex: <会话标题>*`，支持继续开展后续对话。
+   - **交互入口**：会话内快捷键 **`C-c C-r`**、全局快捷键 **`C-c a r`**、输入行斜杠命令 **/session** / **/history** / **/resume**。
+7. **防御性 Buffer 保护 (Display Cap)**：
    通过 advice 拦截 `agent-shell--update-fragment`，当单次 Tool 运行输出超过 120,000 字符时，在 Emacs 缓冲区仅渲染前 80k 与后 40k，避免界面冻结，底层完整数据保留在转储文件（Transcript）与 ACP 载荷中。
-6. **macOS Keychain 认证自愈**：
+8. **macOS Keychain 认证自愈**：
    提供 `my/agent-shell-fix-auth` 命令，一键将 `~/.claude/.credentials.json` 的最新凭证同步入 macOS Keychain 并热重载活跃 Session。
 
 ---
