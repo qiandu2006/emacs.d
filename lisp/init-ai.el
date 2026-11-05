@@ -28,7 +28,7 @@
 (require 'agent-shell-openai nil t)
 (require 'agent-shell-auto-retry nil t)
 (require 'agent-shell-reading nil t)
-(require 'agent-shell-lark nil t)
+(load (expand-file-name "lisp/agent-shell-lark.el" user-emacs-directory) nil t)
 
 ;; Keep chat-style labels enabled. Render live prompt replacement
 ;; through `display' to prevent 1-pixel collapse on some terminal frames.
@@ -597,8 +597,18 @@ and supports live ACP model options."
 (define-key my/agent-shell-prefix-map (kbd "u") #'agent-shell-cursor-start-agent)
 (define-key my/agent-shell-prefix-map (kbd "o") #'my/agent-shell-openai-start-codex)
 (define-key my/agent-shell-prefix-map (kbd "e") #'my/agent-shell-ask-dwim)
+(defun my/agent-shell-lark-reload ()
+  "Reload agent-shell-lark.el and restart the bridge."
+  (interactive)
+  (when (fboundp 'my/agent-shell-lark-stop)
+    (my/agent-shell-lark-stop))
+  (load-file (expand-file-name "lisp/agent-shell-lark.el" user-emacs-directory))
+  (my/agent-shell-lark-start)
+  (message "agent-shell-lark reloaded and started!"))
+
 (define-key my/agent-shell-prefix-map (kbd "L") #'my/agent-shell-lark-start)
 (define-key my/agent-shell-prefix-map (kbd "S") #'my/agent-shell-lark-stop)
+(define-key my/agent-shell-prefix-map (kbd "R") #'my/agent-shell-lark-reload)
 (define-key my/agent-shell-prefix-map (kbd "?") #'agent-shell-help-menu)
 (define-key my/agent-shell-prefix-map (kbd "h") #'agent-shell-help-menu)
 
@@ -619,6 +629,7 @@ and supports live ACP model options."
     "C-c a e" "ask dwim / review diff"
     "C-c a L" "start lark bridge"
     "C-c a S" "stop lark bridge"
+    "C-c a R" "reload lark bridge"
     "C-c a ?" "agent-shell help menu"
     "C-c a h" "agent-shell help menu"))
 
