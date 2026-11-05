@@ -69,7 +69,7 @@ macOS 默认对图形进程的文件描述符限制仅 256，在大型代码工�
 
 ## 三、 飞书个人会话双向远程通信网关 (方案 B)
 
-专为**无法创建企业级 Bot 应用**的个人打造，通过 `lark-cli` 直接连接飞书 **“给自己的会话窗口（Chat with Myself）”**。
+专为**无法创建企业级 Bot 应用**的个人打造，通过 `lark-cli` 直接连接飞书**“给自己的会话窗口（Chat with Myself）”**。
 
 ### 1. 启动与管理
 - **启动网关**：在任意 Agent-Shell 缓冲区中按下 `C-c a L`（或 `M-x my/agent-shell-lark-start`）；
@@ -114,6 +114,7 @@ macOS 默认对图形进程的文件描述符限制仅 256，在大型代码工�
 | **`C-c a e`** | 代码 / Magit | 上下文感知代码解读 / Diff 差异审阅（支持选区、函数、Diff Hunk） |
 | **`C-c a L`** | 全局 | 启动飞书个人会话同步网关 (Scheme B) |
 | **`C-c a S`** | 全局 | 停止飞书个人会话同步网关 |
+| **`C-c a ?` / `h`** | 全局 | 呼出 Agent-Shell 专属帮助与控制菜单 (`agent-shell-help-menu`) |
 | `M-x my/agent-shell-fix-auth` | 全局 | 同步 Claude 凭证至 macOS Keychain 并热重载会话 |
 | `M-x my/agent-shell-lark-status` | 全局 | 查看飞书个人会话网关运行状态 |
 
