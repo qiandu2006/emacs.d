@@ -31,7 +31,11 @@
   "Lark self-chat bridge for `agent-shell'."
   :group 'agent-shell)
 
-(defcustom agent-shell-lark-cli-command "lark-cli"
+(defcustom agent-shell-lark-cli-command
+  (or (executable-find "lark-cli")
+      (let ((brew-path "/opt/homebrew/bin/lark-cli"))
+        (and (file-executable-p brew-path) brew-path))
+      "lark-cli")
   "Path to the Lark CLI executable."
   :type 'string
   :group 'agent-shell-lark)
@@ -222,26 +226,31 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
                               (agent-shell-lark--replace-formulas clean-text)
                             clean-text)))
       (agent-shell-lark--remember-sent prepared-text)
-      (make-process
-       :name "agent-shell-lark-send"
-       :buffer (get-buffer-create " *agent-shell-lark-send*")
-       :connection-type 'pipe
-       :command (if reply-to-id
+      (let ((send-buf (get-buffer-create " *agent-shell-lark-send*")))
+        (with-current-buffer send-buf (erase-buffer))
+        (make-process
+         :name "agent-shell-lark-send"
+         :buffer send-buf
+         :connection-type 'pipe
+         :command (if reply-to-id
+                      (list agent-shell-lark-cli-command
+                            "im" "+messages-reply"
+                            "--message-id" reply-to-id
+                            "--markdown" prepared-text)
                     (list agent-shell-lark-cli-command
-                          "im" "+messages-reply"
-                          "--message-id" reply-to-id
-                          "--markdown" prepared-text)
-                  (list agent-shell-lark-cli-command
-                        "im" "+messages-send"
-                        "--chat-id" chat-id
-                        "--markdown" prepared-text))
-       :sentinel
-       (lambda (process _event)
-         (when (memq (process-status process) '(exit signal))
-           (if (zerop (process-exit-status process))
-               (agent-shell-lark--log "Sent outbound message successfully (%d chars)" (length prepared-text))
-             (agent-shell-lark--log "Warning: Outbound message failed (exit code %d). Check permissions."
-                                    (process-exit-status process)))))))))
+                          "im" "+messages-send"
+                          "--chat-id" chat-id
+                          "--markdown" prepared-text))
+         :sentinel
+         (lambda (process _event)
+           (when (memq (process-status process) '(exit signal))
+             (if (zerop (process-exit-status process))
+                 (agent-shell-lark--log "Sent outbound message successfully (%d chars)" (length prepared-text))
+               (let ((err-text (with-current-buffer (process-buffer process)
+                                 (string-trim (buffer-string)))))
+                 (agent-shell-lark--log "Warning: Outbound message failed (exit code %d): %s"
+                                        (process-exit-status process)
+                                        (if (string-empty-p err-text) "Check permissions/scopes" err-text)))))))))))
 
 ;;; Inbound Polling & Command Dispatch
 
@@ -274,8 +283,19 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
   (let ((trimmed (string-trim text)))
     (cond
      ;; 1. Check echo loop
-     ((seq-some (lambda (hash) (equal hash (secure-hash 'sha1 trimmed)))
-                agent-shell-lark--sent-text-hashes)
+     ((or (string-prefix-p "🔗" trimmed)
+          (string-prefix-p "🚀 [Emacs]" trimmed)
+          (string-prefix-p "⏳ [Emacs]" trimmed)
+          (string-prefix-p "🏁 [Emacs]" trimmed)
+          (string-prefix-p "🏁 **[Agent" trimmed)
+          (string-prefix-p "⚡ **[Agent" trimmed)
+          (string-prefix-p "🔒 **[权限" trimmed)
+          (string-prefix-p "✅ [Emacs]" trimmed)
+          (string-prefix-p "⚠ [Emacs]" trimmed)
+          (string-prefix-p "❓ 未能识别" trimmed)
+          (string-prefix-p "⏹ [Emacs]" trimmed)
+          (seq-some (lambda (hash) (equal hash (secure-hash 'sha1 trimmed)))
+                    agent-shell-lark--sent-text-hashes))
       (agent-shell-lark--log "Ignored self echo message: %s" msg-id))
 
      ;; 2. Interrupt command
@@ -338,12 +358,14 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
       (agent-shell-lark--send "⚠ [Emacs] 未找到活动的 agent-shell 缓冲区，请在 Emacs 启动后再试。" msg-id)
     (with-current-buffer agent-shell-lark--bound-buffer
       (condition-case err
-          (let ((was-busy (shell-maker-busy)))
-            (agent-shell-prompt-queue text)
-            (if was-busy
-                (agent-shell-lark--send (format "⏳ [Emacs] Agent 当前忙碌，Prompt 已入队排队。\n\n内容: %s"
-                                                (truncate-string-to-width text 60 nil nil "..."))
-                                        msg-id)
+          (let ((is-busy (shell-maker-busy)))
+            (if is-busy
+                (progn
+                  (agent-shell--prompt-queue-enqueue :prompt text)
+                  (agent-shell-lark--send (format "⏳ [Emacs] Agent 当前忙碌，Prompt 已入队排队。\n\n内容: %s"
+                                                  (truncate-string-to-width text 60 nil nil "..."))
+                                          msg-id))
+              (agent-shell--insert-to-shell-buffer :text text :submit t :no-focus t)
               (agent-shell-lark--send (format "🚀 [Emacs] Prompt 已接收并开始执行...\n\n内容: %s"
                                               (truncate-string-to-width text 60 nil nil "..."))
                                       msg-id))
@@ -351,6 +373,7 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
                                    (buffer-name agent-shell-lark--bound-buffer)
                                    (truncate-string-to-width text 40 nil nil "...")))
         (error
+         (agent-shell-lark--log "Inject prompt error: %s" (error-message-string err))
          (agent-shell-lark--send (format "⚠ [Emacs] 提交 Prompt 失败: %s" (error-message-string err))
                                  msg-id))))))
 
@@ -360,17 +383,30 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
              (buffer-live-p agent-shell-lark--bound-buffer))
     (let ((chat-id (agent-shell-lark--resolve-chat-id)))
       (when chat-id
-        (setq agent-shell-lark--poll-process
-              (make-process
-               :name "agent-shell-lark-poll"
-               :buffer (get-buffer-create " *agent-shell-lark-poll*")
-               :connection-type 'pipe
-               :command (list agent-shell-lark-cli-command
-                              "im" "+chat-messages-list"
-                              "--chat-id" chat-id
-                              "--page-size" "5"
-                              "--order" "desc")
-               :sentinel #'agent-shell-lark--poll-sentinel))))))
+        (let ((buf (get-buffer-create " *agent-shell-lark-poll*")))
+          (with-current-buffer buf (erase-buffer))
+          (setq agent-shell-lark--poll-process
+                (make-process
+                 :name "agent-shell-lark-poll"
+                 :buffer buf
+                 :connection-type 'pipe
+                 :command (list agent-shell-lark-cli-command
+                                "im" "+chat-messages-list"
+                                "--chat-id" chat-id
+                                "--page-size" "5"
+                                "--order" "desc")
+                 :sentinel #'agent-shell-lark--poll-sentinel)))))))
+
+(defun agent-shell-lark--message-recent-p (time-str)
+  "Return non-nil if TIME-STR is within the last 1 hour (3600s)."
+  (if (null time-str)
+      t
+    (condition-case nil
+        (let* ((parsed (parse-time-string time-str))
+               (encoded (and (nth 5 parsed) (encode-time parsed)))
+               (diff (and encoded (float-time (time-subtract (current-time) encoded)))))
+          (or (null diff) (< (abs diff) 3600)))
+      (error t))))
 
 (defun agent-shell-lark--poll-sentinel (process _event)
   "Process output from the polling PROCESS."
@@ -385,11 +421,13 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
               (when (vectorp messages)
                 ;; Iterate chronological (oldest to newest among latest 5)
                 (dolist (msg (nreverse (append messages nil)))
-                  (let ((msg-id (map-elt msg 'message_id)))
+                  (let ((msg-id (map-elt msg 'message_id))
+                        (ctime (map-elt msg 'create_time)))
                     (when (and msg-id (not (agent-shell-lark--seen-p msg-id)))
                       (agent-shell-lark--remember-seen msg-id)
-                      (when-let* ((text (agent-shell-lark--extract-text msg)))
-                        (agent-shell-lark--handle-inbound-text text msg-id)))))))
+                      (when (agent-shell-lark--message-recent-p ctime)
+                        (when-let* ((text (agent-shell-lark--extract-text msg)))
+                          (agent-shell-lark--handle-inbound-text text msg-id))))))))
           (error
            (agent-shell-lark--log "Poll JSON parse error: %s" (error-message-string err))))))))
 
