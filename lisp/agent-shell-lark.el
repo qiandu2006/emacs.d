@@ -365,7 +365,10 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
                   (agent-shell-lark--send (format "⏳ [Emacs] Agent 当前忙碌，Prompt 已入队排队。\n\n内容: %s"
                                                   (truncate-string-to-width text 60 nil nil "..."))
                                           msg-id))
-              (agent-shell--insert-to-shell-buffer :text text :submit t :no-focus t)
+              (agent-shell-insert :shell-buffer agent-shell-lark--bound-buffer
+                                  :text text
+                                  :submit t
+                                  :no-focus t)
               (agent-shell-lark--send (format "🚀 [Emacs] Prompt 已接收并开始执行...\n\n内容: %s"
                                               (truncate-string-to-width text 60 nil nil "..."))
                                       msg-id))
@@ -513,6 +516,12 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
     (agent-shell-lark--subscribe target)
     ;; Register permission responder
     (setq agent-shell-permission-responder-function #'agent-shell-lark--responder)
+    ;; Reset poll buffer and in-flight process
+    (when (process-live-p agent-shell-lark--poll-process)
+      (delete-process agent-shell-lark--poll-process))
+    (setq agent-shell-lark--poll-process nil)
+    (when-let* ((buf (get-buffer " *agent-shell-lark-poll*")))
+      (with-current-buffer buf (erase-buffer)))
     ;; Start polling timer
     (when (timerp agent-shell-lark--poll-timer)
       (cancel-timer agent-shell-lark--poll-timer))
