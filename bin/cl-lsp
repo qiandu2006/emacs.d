@@ -1,0 +1,17 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec /opt/homebrew/bin/ros -Q -- "$0" "$@"
+|#
+(progn
+  (ros:ensure-asdf)
+  (load "/Users/fred.du/.roswell/local-projects/lem-project/lem/.qlot/setup.lisp")
+  (asdf:load-asd #P"/Users/fred.du/.roswell/local-projects/cxxxr/cl-lsp/cl-lsp.asd")
+  (ql:quickload :cl-lsp :silent t))
+
+(defpackage :cl-lsp-eglot-wrapper
+  (:use :cl))
+(in-package :cl-lsp-eglot-wrapper)
+
+(defun main (&rest argv)
+  (cl-lsp:main argv))
