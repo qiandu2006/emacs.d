@@ -6,7 +6,8 @@
 ;; Emacs builtin packages
 (setq-default auto-window-vscroll nil
 	      default-directory "~"
-	      default-text-properties '(line-spacing 0.2 line-height 1.2) ;default line height
+	      line-spacing nil
+	      default-text-properties nil
 	      frame-title-format "%b"
 	      help-window-select t
 	      initial-major-mode 'fundamental-mode
