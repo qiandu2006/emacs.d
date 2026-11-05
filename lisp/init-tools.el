@@ -26,6 +26,13 @@
   :ensure t
   :defer t
   :mode (("\\.http\\'" . restclient-mode)))
+
+;; CSV：对齐字段、排序、转置等
+(use-package csv-mode
+  :ensure t
+  :defer t
+  :mode (("\\.csv\\'" . csv-mode))
+  :hook (csv-mode . csv-align-mode))
 (use-package benchmark-init
   :ensure t
   :demand t
