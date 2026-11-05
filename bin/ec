@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Raise fd soft limit before (possibly) auto-starting the Emacs daemon:
+# macOS kqueue file-notify costs one fd per watch, and launchd's GUI
+# default is only 256.
+ulimit -n 65536 2>/dev/null
+
+EMACSCLIENT="emacsclient"
+if ! command -v "$EMACSCLIENT" >/dev/null 2>&1; then
+    if [ -x "/Applications/Emacs.app/Contents/MacOS/bin/emacsclient" ]; then
+        EMACSCLIENT="/Applications/Emacs.app/Contents/MacOS/bin/emacsclient"
+    elif [ -x "/Applications/Emacs.app/Contents/MacOS/bin-arm64-11/emacsclient" ]; then
+        EMACSCLIENT="/Applications/Emacs.app/Contents/MacOS/bin-arm64-11/emacsclient"
+    fi
+fi
+
+exec "$EMACSCLIENT" -a "" -c "$@"
