@@ -153,10 +153,113 @@ Display-only: transcripts still receive the complete output.")
   ;; 3. OpenAI Codex: use `codex-acp`
   (require 'agent-shell-openai nil t)
   (setq agent-shell-openai-codex-acp-command '("codex-acp"))
+  (setq agent-shell-openai-default-model-id "gpt-6.1-sol")
+  (setq agent-shell-openai-default-config-options '(("reasoning_effort" . "medium")))
 
   ;; 4. Cursor: use `agent acp`
   (require 'agent-shell-cursor nil t)
   (setq agent-shell-cursor-acp-command '("agent" "acp"))
+
+  ;; Keybindings inside agent-shell-mode-map
+  (when (boundp 'agent-shell-mode-map)
+    (define-key agent-shell-mode-map (kbd "C-c ?") #'agent-shell-help-menu)
+    (define-key agent-shell-mode-map (kbd "C-c C-h") #'agent-shell-help-menu)
+    (define-key agent-shell-mode-map (kbd "C-c C-r") #'my/agent-shell-switch-session))
+
+  ;; Historical Session Discovery & Switching (Cross-Project & Pagination)
+  (defcustom my/agent-shell-list-all-projects-sessions t
+    "When non-nil, query historical sessions across all projects rather than only current CWD."
+    :type 'boolean
+    :group 'agent-shell)
+
+  (defun my/agent-shell--list-sessions-all-projects-advice (orig-fn &rest args)
+    "Allow session/list to query all projects when `my/agent-shell-list-all-projects-sessions' is t."
+    (if my/agent-shell-list-all-projects-sessions
+        (let ((plist (copy-sequence args)))
+          (setq plist (plist-put plist :cwd nil))
+          (apply orig-fn plist))
+      (apply orig-fn args)))
+
+  (unless (advice-member-p #'my/agent-shell--list-sessions-all-projects-advice 'agent-shell--list-sessions)
+    (advice-add 'agent-shell--list-sessions :around #'my/agent-shell--list-sessions-all-projects-advice))
+
+  (defun my/agent-shell-switch-session (&optional arg)
+    "Interactively browse, search, and switch to any historical agent session.
+Fetches all historical sessions (including conversations from 10+ days ago)
+across projects with full pagination.
+With prefix ARG (\\[universal-argument]), replace the current shell buffer;
+otherwise, open the historical session in a new dedicated buffer."
+    (interactive "P")
+    (let* ((shell-buf (if (derived-mode-p 'agent-shell-mode)
+                          (current-buffer)
+                        (seq-first (agent-shell-buffers))))
+           (state (and (buffer-live-p shell-buf)
+                       (buffer-local-value 'agent-shell--state shell-buf))))
+      (unless (and state (map-elt state :client))
+        (user-error "No active agent-shell connection. Please start an agent first (e.g. C-c a o)"))
+      (message "Fetching historical sessions from agent (including past projects)...")
+      (agent-shell--list-sessions
+       :state state
+       :cwd nil
+       :buffer shell-buf
+       :page-limit 10
+       :on-success
+       (lambda (raw-sessions)
+         (run-at-time
+          0 nil
+          (lambda ()
+            (let* ((sorted (agent-shell--sort-sessions-by-recency raw-sessions)))
+              (if (null sorted)
+                  (message "No historical sessions found for this agent.")
+                (let* ((choices
+                        (mapcar
+                         (lambda (s)
+                           (let* ((title (or (map-elt s 'title) "Untitled conversation"))
+                                  (date-raw (or (map-elt s 'updatedAt) (map-elt s 'createdAt)))
+                                  (date-str (if date-raw (agent-shell--format-session-date date-raw) "Unknown date"))
+                                  (cwd (or (map-elt s 'cwd) ""))
+                                  (dir-name (if (string-empty-p cwd) "-" (file-name-nondirectory (directory-file-name cwd))))
+                                  (sid (substring (or (map-elt s 'sessionId) "") 0 8))
+                                  (label (format "%-42s  %-15s  %-16s  (%s)"
+                                                 (truncate-string-to-width title 42 0 nil "…")
+                                                 date-str
+                                                 (concat "[" dir-name "]")
+                                                 sid)))
+                             (cons label s)))
+                         sorted))
+                       (selection (completing-read "Switch to historical session: "
+                                                   (mapcar #'car choices)
+                                                   nil t))
+                       (selected-session (cdr (assoc selection choices))))
+                  (when selected-session
+                    (let* ((sid (map-elt selected-session 'sessionId))
+                           (title (map-elt selected-session 'title))
+                           (cwd (map-elt selected-session 'cwd))
+                           (config (map-elt state :agent-config)))
+                      (if (and arg (derived-mode-p 'agent-shell-mode))
+                          (progn
+                            (message "Reloading session [%s] into current buffer..." (or title sid))
+                            (agent-shell-restart :session-id sid))
+                        (let* ((target-dir (if (and cwd (file-directory-p cwd))
+                                               (file-name-as-directory (expand-file-name cwd))
+                                             default-directory))
+                               (default-directory target-dir)
+                               (new-buf (agent-shell--start :config config
+                                                            :session-id sid
+                                                            :cwd target-dir
+                                                            :new-session t
+                                                            :no-focus t)))
+                          (when title
+                            (shell-maker-set-buffer-name
+                             new-buf
+                             (format "*%s: %s*"
+                                     (map-elt config :mode-line-name)
+                                     (truncate-string-to-width title 22 0 nil "…"))))
+                          (agent-shell--display-buffer new-buf)
+                          (message "Resumed historical session [%s] (Project: %s)" (or title sid) target-dir))))))))))
+       :on-failure
+       (lambda (err _)
+         (message "Failed to fetch historical sessions: %s" err)))))
 
   ;; Auto-retry on retriable errors & 429 (Features 7 & 10)
   (require 'agent-shell-auto-retry)
@@ -167,20 +270,86 @@ Display-only: transcripts still receive the complete output.")
   ;; Lark personal self-chat bridge (Features 1-4 Scheme B)
   (require 'agent-shell-lark)
 
+  ;; Codex Model Choices and Interactive Starter
+  (defvar my/agent-shell-openai-available-models
+    '(("6.1 Sol (workhorse coding, fast)" . "gpt-6.1-sol")
+      ("6 Astra (frontier intelligence, highest capability)" . "gpt-6-astra")
+      ("6.1 Terra (balanced codex model)" . "gpt-6.1-terra")
+      ("6 Sol (previous generation workhorse)" . "gpt-6-sol")
+      ("6 Luna (fast and affordable)" . "gpt-6-luna")
+      ("5.6 Sol (legacy workhorse)" . "gpt-5.6-sol")
+      ("5.6 Terra (legacy balanced)" . "gpt-5.6-terra")
+      ("5.6 Luna (legacy fast)" . "gpt-5.6-luna"))
+    "Available models for OpenAI Codex in codex-acp.")
+
+  (defvar my/agent-shell-openai-available-thought-levels
+    '("low" "medium" "high" "xhigh" "max" "ultra")
+    "Available reasoning effort levels for OpenAI Codex.")
+
+  (defun my/agent-shell-openai-start-codex (&optional arg)
+    "Start an interactive Codex agent shell.
+With prefix ARG (\\[universal-argument]), prompt interactively for the
+model and reasoning effort before launching."
+    (interactive "P")
+    (if arg
+        (let* ((choice (completing-read "Select Codex Model: "
+                                        (mapcar #'car my/agent-shell-openai-available-models)
+                                        nil t nil nil (caar my/agent-shell-openai-available-models)))
+               (model-id (cdr (assoc choice my/agent-shell-openai-available-models)))
+               (thought (completing-read "Select Reasoning Effort: "
+                                         my/agent-shell-openai-available-thought-levels
+                                         nil t nil nil "medium"))
+               (agent-shell-openai-default-model-id model-id)
+               (agent-shell-openai-default-config-options `(("reasoning_effort" . ,thought))))
+          (message "Starting Codex with model: %s (reasoning: %s)..." model-id thought)
+          (agent-shell-openai-start-codex))
+      (agent-shell-openai-start-codex)))
+
+  ;; Slash commands support in agent-shell prompt
+  (defun my/agent-shell-slash-command-advice (orig-fn &rest args)
+    "Intercept slash commands typed directly into prompt: /session, /model, /thought, /mode, /help."
+    (if (and (derived-mode-p 'agent-shell-mode)
+             (fboundp 'comint-line-beginning-position))
+        (let* ((input (string-trim (buffer-substring-no-properties
+                                    (comint-line-beginning-position)
+                                    (point-max)))))
+          (cond
+           ((or (string= input "/session") (string= input "/history") (string= input "/resume"))
+            (delete-region (comint-line-beginning-position) (point-max))
+            (call-interactively #'my/agent-shell-switch-session))
+           ((string= input "/model")
+            (delete-region (comint-line-beginning-position) (point-max))
+            (call-interactively #'agent-shell-set-session-model))
+           ((or (string= input "/thought") (string= input "/effort"))
+            (delete-region (comint-line-beginning-position) (point-max))
+            (call-interactively #'agent-shell-set-session-thought-level))
+           ((string= input "/mode")
+            (delete-region (comint-line-beginning-position) (point-max))
+            (call-interactively #'agent-shell-set-session-mode))
+           ((or (string= input "/help") (string= input "/menu") (string= input "/?"))
+            (delete-region (comint-line-beginning-position) (point-max))
+            (call-interactively #'agent-shell-help-menu))
+           (t
+            (apply orig-fn args))))
+      (apply orig-fn args)))
+
+  (unless (advice-member-p #'my/agent-shell-slash-command-advice 'agent-shell-submit)
+    (advice-add 'agent-shell-submit :around #'my/agent-shell-slash-command-advice))
+
   ;; Keybindings
   (global-set-key (kbd "C-c a a") #'agent-shell)
   (global-set-key (kbd "C-c a s") #'agent-shell-switch-buffer)
+  (global-set-key (kbd "C-c a r") #'my/agent-shell-switch-session)
   (when (fboundp 'agent-shell-antigravity-start-agent)
     (global-set-key (kbd "C-c a g") #'agent-shell-antigravity-start-agent))
   (when (fboundp 'agent-shell-anthropic-start-claude-code)
     (global-set-key (kbd "C-c a l") #'agent-shell-anthropic-start-claude-code))
   (when (fboundp 'agent-shell-cursor-start-agent)
     (global-set-key (kbd "C-c a u") #'agent-shell-cursor-start-agent))
-  (when (fboundp 'agent-shell-openai-start-codex)
-    (global-set-key (kbd "C-c a o") #'agent-shell-openai-start-codex))
+  (global-set-key (kbd "C-c a o") #'my/agent-shell-openai-start-codex)
   (global-set-key (kbd "C-c a e") #'my/agent-shell-ask-dwim)
   (global-set-key (kbd "C-c a L") #'my/agent-shell-lark-start)
-  (global-set-key (kbd "C-c a S") #'my/agent-shell-lark-stop))
+  (global-set-key (kbd "C-c a S") #'my/agent-shell-lark-stop)))
 
 (provide 'init-ai)
 ;;; init-ai.el ends here
