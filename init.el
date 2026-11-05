@@ -4,7 +4,12 @@
 ;; 具体配置都在 lisp/init-*.el 里。
 ;;; Code:
 
-(require 'early-init)
+;; early-init is automatically loaded by Emacs 27+ before init.el.
+;; When loaded directly (e.g. reload or batch), load it explicitly by path.
+(unless (featurep 'early-init)
+  (let ((early-init-file (expand-file-name "early-init.el" user-emacs-directory)))
+    (when (file-exists-p early-init-file)
+      (load early-init-file nil t))))
 (require 'custom)
 
 (require 'cl-lib)
@@ -27,7 +32,7 @@
 (global-set-key (kbd "<f3>") 'reload-init-file)
 
 ;; packages
-(add-to-list 'load-path (concat user-emacs-directory "lisp"))
+(add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
 
 (package-initialize)
 (require 'package)
@@ -57,6 +62,7 @@
 (require 'init-tools)
 (require 'init-languages)
 (require 'init-lisp)
+(require 'init-ai)
 
 (setq custom-file (locate-user-emacs-file "custom.el"))
 (when (file-exists-p custom-file)
@@ -94,6 +100,73 @@
             (insert (format "   • %-20s = %s\n" key val)))))
       (special-mode)
       (display-buffer (current-buffer)))))
+
+(use-package rime
+  :ensure t
+  :custom
+  (default-input-method "rime")
+  ;; 直接复用 macOS 鼠须管的配置与词库
+  (rime-user-data-dir "~/Library/Rime")
+  ;; 针对 Apple Silicon (M1/M2/M3/M4) 与 Intel Mac 指定库路径
+  (rime-emacs-module-header-root "/Applications/Emacs.app/Contents/Resources/include")
+  (rime-librime-paths
+   '("/opt/homebrew/lib/librime.dylib"
+     "/usr/local/lib/librime.dylib"))
+  :bind
+  ;; 绑定 C-\ 为输入法全局切换快捷键
+  (:map rime-mode-map
+        ("C-`" . 'rime-send-keybinding))
+  :config
+  ;; 默认候选词展示方式：如果安装了 posframe 则使用悬浮窗，否则使用下方的 message
+  (setq rime-show-candidate 'message))
+
+(with-eval-after-load 'rime
+  ;; 满足以下任意条件时，自动静默切为英文输入
+  (setq rime-disable-predicates
+        '(rime-predicate-after-alphabet-char-p    ; 刚打完英文字母后
+          rime-predicate-prog-in-code-p           ; 编程模式且光标在代码段内（注释外）
+          rime-predicate-space-after-cc-p         ; 中文与空格之后
+          rime-predicate-current-uppercase-letter-p))) ; 输入大写字母时
+
+(defun my/sql-compact-region-or-buffer ()
+  "将选中区域或当前 Buffer 中的 SQL 多余空行和折行压缩为紧凑格式。"
+  (interactive)
+  (let ((beg (if (use-region-p) (region-beginning) (point-min)))
+        (end (if (use-region-p) (region-end) (point-max))))
+    (save-excursion
+      ;; 1. 将连续两个以上的空白符替换为一个空格
+      (replace-regexp-in-region "[ \t]+" " " beg end)
+      ;; 2. 删除空行
+      (replace-regexp-in-region "^[ \t]*\n" "" beg end)
+      ;; 3. 核心关键字前保留换行，其余字段合并在一行
+      (dolist (kw '("FROM" "WHERE" "GROUP BY" "HAVING" "ORDER BY" "LIMIT"))
+        (goto-char beg)
+        (while (re-search-forward (format "\\s-+%s\\b" kw) end t)
+          (replace-match (format "\n%s" kw) t t))))
+    (message "SQL 已紧凑化处理")))
+
+(defun my/sql-to-single-line ()
+  "将选中区域或当前 Buffer 中的 SQL 压缩为单行（自动安全剔除注释，防语法失效）。"
+  (interactive)
+  (let* ((beg (if (use-region-p) (region-beginning) (point-min)))
+         (end (if (use-region-p) (region-end) (point-max)))
+         (text (buffer-substring-no-properties beg end)))
+    ;; 1. 剔除单行注释 -- ...
+    (setq text (replace-regexp-in-string "--.*$" "" text))
+    ;; 2. 剔除多行注释 /* ... */
+    (setq text (replace-regexp-in-string "/\\*.*?\\*/" "" text))
+    ;; 3. 将所有换行符、制表符及连续多空格压缩为单个空格
+    (setq text (replace-regexp-in-string "[ \t\n\r]+" " " text))
+    ;; 4. 去除首尾多余空格
+    (setq text (string-trim text))
+    ;; 替换原内容
+    (delete-region beg end)
+    (insert text)
+    (message "✅ SQL 已安全压缩为单行！")))
+
+;; 绑定快捷键（例如 C-c C-j 或与 sql-mode 绑定）
+(with-eval-after-load 'sql
+  (define-key sql-mode-map (kbd "C-c C-j") #'my/sql-to-single-line))
 
 (provide 'init)
 
