@@ -12,8 +12,9 @@
 ;;     `lark-cli im +chat-messages-list', deduplicating outbound echoes, routing
 ;;     prompts to `agent-shell-prompt-queue', handling "/cc" interrupts, and resolving
 ;;     permission approvals via plain text replies (1/2, y/n).
-;;   - Formula Rendering: display formulas ($$...$$, \[...\]) rendered via Node MathJax
-;;     and rsvg-convert into PNG, uploaded once via `lark-cli' and embedded as inline image.
+;;   - Formula Rendering: Display and inline LaTeX formulas ($$...$$, \[...\], $...$)
+;;     are converted into mathematical Unicode characters and structured blockquotes,
+;;     rendering cleanly on both Desktop and Mobile while strictly preserving code blocks.
 
 ;;; Code:
 
@@ -78,7 +79,7 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
   :group 'agent-shell-lark)
 
 (defcustom agent-shell-lark-render-formulas t
-  "When non-nil, render display math ($$...$$, \\[...\\]) as images."
+  "When non-nil, render display math ($$...$$, \\[...\\]) as images via Node.js MathJax."
   :type 'boolean
   :group 'agent-shell-lark)
 
@@ -144,44 +145,276 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
       (goto-char (point-max))
       (insert (format "[%s] %s\n" time-str line)))))
 
-;;; Formula rendering (display math -> embedded image)
+;;; Formula rendering & LaTeX-to-Unicode conversion for Lark
 
-(defconst agent-shell-lark--formula-regexp
-  "\\$\\$\\([^$]+\\)\\$\\$\\|\\\\\\[\\(\\(?:.\\|\n\\)*?\\)\\\\\\]"
-  "Match display math delimited by $$...$$ or \\[...\\].")
+(defconst agent-shell-lark--tex-symbols
+  '(;; Calligraphic & Blackboard
+    ("\\\\mathcal{H}" . "ℋ")
+    ("\\\\mathcal{L}" . "ℒ")
+    ("\\\\mathcal{O}" . "𝒪")
+    ("\\\\mathcal{N}" . "𝒩")
+    ("\\\\mathcal{D}" . "𝒟")
+    ("\\\\mathcal{F}" . "ℱ")
+    ("\\\\mathcal{X}" . "𝒳")
+    ("\\\\mathcal{Y}" . "𝒴")
+    ("\\\\mathbb{R}" . "ℝ")
+    ("\\\\mathbb{E}" . "𝔼")
+    ("\\\\mathbb{P}" . "ℙ")
+    ("\\\\mathbb{Z}" . "ℤ")
+    ("\\\\mathbb{C}" . "ℂ")
+    ("\\\\mathbb{N}" . "ℕ")
+    ;; Greek uppercase (case-sensitive)
+    ("\\\\Gamma" . "Γ")
+    ("\\\\Delta" . "Δ")
+    ("\\\\Theta" . "Θ")
+    ("\\\\Lambda" . "Λ")
+    ("\\\\Xi" . "Ξ")
+    ("\\\\Pi" . "Π")
+    ("\\\\Sigma" . "Σ")
+    ("\\\\Upsilon" . "Υ")
+    ("\\\\Phi" . "Φ")
+    ("\\\\Psi" . "Ψ")
+    ("\\\\Omega" . "Ω")
+    ;; Greek lowercase
+    ("\\\\alpha" . "α")
+    ("\\\\beta" . "β")
+    ("\\\\gamma" . "γ")
+    ("\\\\delta" . "δ")
+    ("\\\\epsilon" . "ε")
+    ("\\\\varepsilon" . "ε")
+    ("\\\\zeta" . "ζ")
+    ("\\\\eta" . "η")
+    ("\\\\theta" . "θ")
+    ("\\\\vartheta" . "ϑ")
+    ("\\\\iota" . "ι")
+    ("\\\\kappa" . "κ")
+    ("\\\\lambda" . "λ")
+    ("\\\\mu" . "μ")
+    ("\\\\nu" . "ν")
+    ("\\\\xi" . "ξ")
+    ("\\\\pi" . "π")
+    ("\\\\varpi" . "ϖ")
+    ("\\\\rho" . "ρ")
+    ("\\\\varrho" . "ϱ")
+    ("\\\\sigma" . "σ")
+    ("\\\\varsigma" . "ς")
+    ("\\\\tau" . "τ")
+    ("\\\\upsilon" . "υ")
+    ("\\\\phi" . "ϕ")
+    ("\\\\varphi" . "φ")
+    ("\\\\chi" . "χ")
+    ("\\\\psi" . "ψ")
+    ("\\\\omega" . "ω")
+    ;; Set & Logic & Relations
+    ("\\\\in" . "∈")
+    ("\\\\notin" . "∉")
+    ("\\\\subset" . "⊂")
+    ("\\\\subseteq" . "⊆")
+    ("\\\\supset" . "⊃")
+    ("\\\\supseteq" . "⊇")
+    ("\\\\cap" . "∩")
+    ("\\\\cup" . "∪")
+    ("\\\\forall" . "∀")
+    ("\\\\exists" . "∃")
+    ("\\\\emptyset" . "∅")
+    ("\\\\implies" . "⟹")
+    ("\\\\iff" . "⟺")
+    ("\\\\to" . "→")
+    ("\\\\rightarrow" . "→")
+    ("\\\\leftarrow" . "←")
+    ("\\\\mapsto" . "↦")
+    ;; Math Operators
+    ("\\\\nabla" . "∇")
+    ("\\\\partial" . "∂")
+    ("\\\\sum" . "∑")
+    ("\\\\prod" . "∏")
+    ("\\\\int" . "∫")
+    ("\\\\oint" . "∮")
+    ("\\\\infty" . "∞")
+    ("\\\\approx" . "≈")
+    ("\\\\sim" . "∼")
+    ("\\\\simeq" . "≃")
+    ("\\\\cong" . "≅")
+    ("\\\\equiv" . "≡")
+    ("\\\\neq" . "≠")
+    ("\\\\ne" . "≠")
+    ("\\\\leq" . "≤")
+    ("\\\\le" . "≤")
+    ("\\\\geq" . "≥")
+    ("\\\\ge" . "≥")
+    ("\\\\ll" . "≪")
+    ("\\\\gg" . "≫")
+    ("\\\\times" . "×")
+    ("\\\\cdot" . "·")
+    ("\\\\pm" . "±")
+    ("\\\\mp" . "∓")
+    ("\\\\div" . "÷")
+    ("\\\\otimes" . "⊗")
+    ("\\\\oplus" . "⊕")
+    ("\\\\odot" . "⊙")
+    ("\\\\circ" . "∘")
+    ;; Delimiters & Accents
+    ("\\\\langle" . "⟨")
+    ("\\\\rangle" . "⟩")
+    ("\\\\Vert" . "‖")
+    ("\\\\|" . "‖")
+    ("\\\\{" . "{")
+    ("\\\\}" . "}")
+    ;; Strip \left and \right
+    ("\\\\left" . "")
+    ("\\\\right" . "")
+    ;; Spacing
+    ("\\\\quad" . "  ")
+    ("\\\\qquad" . "    ")
+    ("\\\\," . " ")
+    ("\\\\;" . " ")
+    ("\\\\!" . ""))
+  "Mapping of LaTeX TeX control sequences to Unicode characters.")
+
+(defun agent-shell-lark--clean-tex (tex)
+  "Convert raw LaTeX math string TEX into human-readable Unicode math."
+  (let ((case-fold-search nil)
+        (s tex))
+    ;; Functions and wrappers: \text{...}, \mathrm{...}, \mathbf{...}
+    (setq s (replace-regexp-in-string "\\\\\\(text\\|mathrm\\|mathbf\\|boldsymbol\\|operatorname\\){\\([^}]+\\)}" "\\2" s t))
+    (setq s (replace-regexp-in-string "\\\\frac{\\([^}]+\\)}{\\([^}]+\\)}" "(\\1 / \\2)" s t))
+    (setq s (replace-regexp-in-string "\\\\sqrt{\\([^}]+\\)}" "√(\\1)" s t))
+    (setq s (replace-regexp-in-string "\\\\sqrt" "√" s t t))
+    ;; Symbol replacements (case-sensitive)
+    (dolist (pair agent-shell-lark--tex-symbols)
+      (setq s (replace-regexp-in-string (car pair) (cdr pair) s t t)))
+    ;; Subscripts and superscripts
+    (setq s (replace-regexp-in-string "\\^2\\b" "²" s t t))
+    (setq s (replace-regexp-in-string "\\^{2}" "²" s t t))
+    (setq s (replace-regexp-in-string "\\^3\\b" "³" s t t))
+    (setq s (replace-regexp-in-string "\\^{3}" "³" s t t))
+    (setq s (replace-regexp-in-string "\\^T\\b" "ᵀ" s t t))
+    (setq s (replace-regexp-in-string "\\^{T}" "ᵀ" s t t))
+    (setq s (replace-regexp-in-string "\\^\\*" "*" s t t))
+    (setq s (replace-regexp-in-string "\\^{k}" "ᵏ" s t t))
+    (setq s (replace-regexp-in-string "\\^{n}" "ⁿ" s t t))
+    (setq s (replace-regexp-in-string "\\^-1" "⁻¹" s t t))
+    ;; Unwrap subscripts like _{new} -> _new, _{old} -> _old, _{Euc} -> _Euc
+    (setq s (replace-regexp-in-string "_{\\([^{}]+\\)}" "_\\1" s t))
+    ;; Clean remaining single braces like {H} -> H
+    (setq s (replace-regexp-in-string "{\\([^{}]+\\)}" "\\1" s t))
+    (string-trim s)))
 
 (defun agent-shell-lark--formula-tools-ready-p ()
-  "Return non-nil when formula rendering toolchain is available."
+  "Return non-nil when the formula rendering toolchain is available."
   (and (executable-find "node")
        (executable-find "rsvg-convert")
-       (file-exists-p (expand-file-name "tex2svg.js" agent-shell-lark-formula-tools-directory))
-       (file-directory-p (expand-file-name "node_modules/mathjax" agent-shell-lark-formula-tools-directory))))
+       (executable-find agent-shell-lark-cli-command)
+       (file-executable-p (expand-file-name "render-formula.sh" agent-shell-lark-formula-tools-directory))
+       (file-exists-p (expand-file-name "tex2svg.js" agent-shell-lark-formula-tools-directory))))
 
-(defun agent-shell-lark--formula-cache-dir ()
-  "Return the cache directory for rendered formulas."
-  (let ((dir (expand-file-name "agent-shell-lark" (or (getenv "XDG_CACHE_HOME") "~/.cache"))))
-    (make-directory dir t)
-    dir))
+(defun agent-shell-lark--formula-disk-key (hash)
+  "Return cached Lark image_key for HASH from disk if exists."
+  (let ((key-file (expand-file-name (concat hash ".key")
+                                    (expand-file-name "agent-shell-lark"
+                                                      (or (getenv "XDG_CACHE_HOME") "~/.cache")))))
+    (when (and (file-exists-p key-file) (> (file-attribute-size (file-attributes key-file)) 0))
+      (string-trim (with-temp-buffer
+                     (insert-file-contents key-file)
+                     (buffer-string))))))
 
-(defun agent-shell-lark--formulas-in (text)
-  "Return unique TeX sources of display formulas in TEXT."
-  (let ((start 0) (formulas ()))
-    (while (string-match agent-shell-lark--formula-regexp text start)
-      (push (or (match-string 1 text) (match-string 2 text)) formulas)
-      (setq start (match-end 0)))
+(defun agent-shell-lark--extract-display-formulas (text)
+  "Extract unique display math strings from non-code segments of TEXT."
+  (let ((parts (split-string text "```" nil))
+        (is-code nil)
+        (formulas nil))
+    (dolist (part parts)
+      (unless is-code
+        (let ((start 0))
+          (while (string-match "\\$\\$\\([^$]+?\\)\\$\\$\\|\\\\\\[\\(\\(?:.\\|\n\\)*?\\)\\\\\\]" part start)
+            (let ((f (or (match-string 1 part) (match-string 2 part))))
+              (when (and f (not (string-empty-p (string-trim f))))
+                (push (string-trim f) formulas)))
+            (setq start (match-end 0)))))
+      (setq is-code (not is-code)))
     (seq-uniq (nreverse formulas))))
 
-(defun agent-shell-lark--replace-formulas (text)
-  "Replace TEXT's display formulas with image references where known."
-  (replace-regexp-in-string
-   agent-shell-lark--formula-regexp
-   (lambda (match)
-     (let* ((formula (progn
-                       (string-match agent-shell-lark--formula-regexp match)
-                       (or (match-string 1 match) (match-string 2 match))))
-            (key (cdr (assoc (sha1 formula) agent-shell-lark--formula-keys))))
-       (if key (format "![formula](%s)" key) match)))
-   text t t))
+(defun agent-shell-lark--render-formula-async (formula callback)
+  "Render and upload FORMULA, then invoke (CALLBACK KEY-OR-NIL)."
+  (let* ((script (expand-file-name "render-formula.sh" agent-shell-lark-formula-tools-directory))
+         (hash (sha1 formula))
+         (mem-key (cdr (assoc hash agent-shell-lark--formula-keys)))
+         (disk-key (agent-shell-lark--formula-disk-key hash)))
+    (cond
+     (mem-key (funcall callback mem-key))
+     (disk-key
+      (push (cons hash disk-key) agent-shell-lark--formula-keys)
+      (funcall callback disk-key))
+     (t
+      (let* ((buf (generate-new-buffer " *agent-shell-lark-formula*"))
+             (proc (make-process
+                    :name "agent-shell-lark-formula"
+                    :buffer buf
+                    :connection-type 'pipe
+                    :command (list script)
+                    :sentinel
+                    (lambda (p _event)
+                      (when (memq (process-status p) '(exit signal))
+                        (let* ((ok (zerop (process-exit-status p)))
+                               (out (with-current-buffer (process-buffer p)
+                                      (string-trim (buffer-string)))))
+                          (kill-buffer (process-buffer p))
+                          (if (and ok (not (string-empty-p out)))
+                              (progn
+                                (push (cons hash out) agent-shell-lark--formula-keys)
+                                (funcall callback out))
+                            (agent-shell-lark--log "Formula render failed (%d): %s"
+                                                   (process-exit-status p) out)
+                            (funcall callback nil))))))))
+        (process-send-string proc formula)
+        (process-send-eof proc))))))
+
+(defun agent-shell-lark--format-math-segment (text)
+  "Format LaTeX formulas in a non-code segment TEXT for Lark.
+Display math is replaced with rendered HD image tags `![formula](image_key)'
+when available, or styled blockquotes on fallback.  Inline math is converted
+to mathematical Unicode characters."
+  (let ((case-fold-search nil)
+        (s text))
+    ;; 1. Convert Display Math ($$...$$ or \[...\]) to HD images or quote blocks
+    (setq s (replace-regexp-in-string
+             "\\$\\$\\([^$]+?\\)\\$\\$\\|\\\\\\[\\(\\(?:.\\|\n\\)*?\\)\\\\\\]"
+             (lambda (match)
+               (let* ((inner (string-trim
+                              (if (string-prefix-p "$$" match)
+                                  (substring match 2 -2)
+                                (substring match 2 -2))))
+                      (hash (sha1 inner))
+                      (key (or (cdr (assoc hash agent-shell-lark--formula-keys))
+                               (agent-shell-lark--formula-disk-key hash))))
+                 (if key
+                     (format "\n\n![formula](%s)\n\n" key)
+                   (let ((cleaned (agent-shell-lark--clean-tex inner)))
+                     (format "\n\n> 📐 **公式**：\n> %s\n\n" cleaned)))))
+             s t t))
+    ;; 2. Convert Inline Math ($...$ or \(...\)) to clean Unicode math
+    (setq s (replace-regexp-in-string
+             "\\$\\([^$\n]+?\\)\\$\\|\\\\(\\([^)]+?\\)\\\\)"
+             (lambda (match)
+               (let* ((inner (if (string-prefix-p "$" match)
+                                 (substring match 1 -1)
+                               (substring match 2 -2)))
+                      (cleaned (agent-shell-lark--clean-tex inner)))
+                 cleaned))
+             s t t))
+    s))
+
+(defun agent-shell-lark--format-math-for-lark (text)
+  "Format LaTeX formulas in TEXT for Lark (Feishu) rendering while preserving code blocks."
+  (let ((parts (split-string text "```" nil))
+        (is-code nil)
+        (result nil))
+    (dolist (part parts)
+      (if is-code
+          (push (concat "```" part "```") result)
+        (push (agent-shell-lark--format-math-segment part) result))
+      (setq is-code (not is-code)))
+    (string-join (nreverse result) "")))
 
 ;;; Outbound Messaging
 
@@ -211,8 +444,39 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
     (when (> (length agent-shell-lark--sent-text-hashes) 200)
       (setq agent-shell-lark--sent-text-hashes (seq-take agent-shell-lark--sent-text-hashes 100)))))
 
+(defun agent-shell-lark--send-internal (prepared-text chat-id &optional reply-to-id)
+  "Dispatch outbound PREPARED-TEXT to CHAT-ID or REPLY-TO-ID via `lark-cli'."
+  (agent-shell-lark--remember-sent prepared-text)
+  (let ((send-buf (get-buffer-create " *agent-shell-lark-send*")))
+    (with-current-buffer send-buf (erase-buffer))
+    (make-process
+     :name "agent-shell-lark-send"
+     :buffer send-buf
+     :connection-type 'pipe
+     :command (if reply-to-id
+                  (list agent-shell-lark-cli-command
+                        "im" "+messages-reply"
+                        "--message-id" reply-to-id
+                        "--markdown" prepared-text)
+                (list agent-shell-lark-cli-command
+                      "im" "+messages-send"
+                      "--chat-id" chat-id
+                      "--markdown" prepared-text))
+     :sentinel
+     (lambda (process _event)
+       (when (memq (process-status process) '(exit signal))
+         (if (zerop (process-exit-status process))
+             (agent-shell-lark--log "Sent outbound message successfully (%d chars)" (length prepared-text))
+           (let ((err-text (with-current-buffer (process-buffer process)
+                             (string-trim (buffer-string)))))
+             (agent-shell-lark--log "Warning: Outbound message failed (exit code %d): %s"
+                                    (process-exit-status process)
+                                    (if (string-empty-p err-text) "Check permissions/scopes" err-text)))))))))
+
 (defun agent-shell-lark--send (text &optional reply-to-id)
-  "Send TEXT to the user's self-conversation asynchronously."
+  "Send TEXT to the user's self-conversation asynchronously.
+If `agent-shell-lark-render-formulas' is non-nil, display math ($$...$$, \\[...\\])
+is rendered via local Node.js MathJax as HD images before sending."
   (let ((chat-id (agent-shell-lark--resolve-chat-id)))
     (unless chat-id
       (agent-shell-lark--log "Error: chat_id not resolved; cannot send message")
@@ -220,37 +484,30 @@ If nil, the bridge queries `lark-cli' to discover it automatically."
     (let* ((clean-text (if (> (length text) agent-shell-lark-max-message-length)
                            (concat (substring text 0 agent-shell-lark-max-message-length)
                                    "\n\n[... truncated by agent-shell-lark ...]")
-                         text))
-           (prepared-text (if (and agent-shell-lark-render-formulas
-                                   (agent-shell-lark--formula-tools-ready-p))
-                              (agent-shell-lark--replace-formulas clean-text)
-                            clean-text)))
-      (agent-shell-lark--remember-sent prepared-text)
-      (let ((send-buf (get-buffer-create " *agent-shell-lark-send*")))
-        (with-current-buffer send-buf (erase-buffer))
-        (make-process
-         :name "agent-shell-lark-send"
-         :buffer send-buf
-         :connection-type 'pipe
-         :command (if reply-to-id
-                      (list agent-shell-lark-cli-command
-                            "im" "+messages-reply"
-                            "--message-id" reply-to-id
-                            "--markdown" prepared-text)
-                    (list agent-shell-lark-cli-command
-                          "im" "+messages-send"
-                          "--chat-id" chat-id
-                          "--markdown" prepared-text))
-         :sentinel
-         (lambda (process _event)
-           (when (memq (process-status process) '(exit signal))
-             (if (zerop (process-exit-status process))
-                 (agent-shell-lark--log "Sent outbound message successfully (%d chars)" (length prepared-text))
-               (let ((err-text (with-current-buffer (process-buffer process)
-                                 (string-trim (buffer-string)))))
-                 (agent-shell-lark--log "Warning: Outbound message failed (exit code %d): %s"
-                                        (process-exit-status process)
-                                        (if (string-empty-p err-text) "Check permissions/scopes" err-text)))))))))))
+                         text)))
+      (if (and agent-shell-lark-render-formulas
+               (agent-shell-lark--formula-tools-ready-p))
+          (let* ((formulas (agent-shell-lark--extract-display-formulas clean-text))
+                 (missing (seq-remove
+                           (lambda (f)
+                             (or (assoc (sha1 f) agent-shell-lark--formula-keys)
+                                 (agent-shell-lark--formula-disk-key (sha1 f))))
+                           formulas))
+                 (pending (length missing))
+                 (finish (lambda ()
+                           (let ((prepared-text (agent-shell-lark--format-math-for-lark clean-text)))
+                             (agent-shell-lark--send-internal prepared-text chat-id reply-to-id)))))
+            (if (zerop pending)
+                (funcall finish)
+              (dolist (formula missing)
+                (agent-shell-lark--render-formula-async
+                 formula
+                 (lambda (_key)
+                   (setq pending (1- pending))
+                   (when (zerop pending)
+                     (funcall finish)))))))
+        (let ((prepared-text (agent-shell-lark--format-math-for-lark clean-text)))
+          (agent-shell-lark--send-internal prepared-text chat-id reply-to-id))))))
 
 ;;; Inbound Polling & Command Dispatch
 
