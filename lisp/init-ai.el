@@ -191,6 +191,49 @@ Display-only: transcripts still receive the complete output.")
 (unless (advice-member-p #'my/agent-shell--list-sessions-all-projects-advice 'agent-shell--list-sessions)
   (advice-add 'agent-shell--list-sessions :around #'my/agent-shell--list-sessions-all-projects-advice))
 
+(defun my/agent-shell--auto-fork-on-lock-advice (orig-fn &rest args)
+  "Auto-fork session when session/load or session/resume fails with thread_active_writer.
+When a Codex session is already open in another client (e.g. ChatGPT Desktop App),
+Codex rejects direct resumption with thread_active_writer.  This advice catches
+that failure and immediately forks the session instead, restoring 100% of the
+prior conversation and tool execution history without conflict."
+  (let* ((plist args)
+         (state (plist-get plist :state))
+         (request (plist-get plist :request))
+         (method (map-elt request :method))
+         (orig-on-failure (plist-get plist :on-failure)))
+    (if (not (member method '("session/load" "session/resume")))
+        (apply orig-fn args)
+      (apply orig-fn
+             (plist-put (copy-sequence plist)
+                        :on-failure
+                        (lambda (error-data &optional raw-message)
+                          (let* ((err-str (format "%s %s" (or error-data "") (or raw-message "")))
+                                 (params (map-elt request :params))
+                                 (session-id (or (map-elt params 'sessionId)
+                                                 (map-elt params :sessionId))))
+                            (if (and session-id
+                                     (map-elt state :supports-session-fork)
+                                     (string-match-p "already has an active writer\\|thread_active_writer\\|in use by another Codex client" err-str))
+                                (progn
+                                  (message "Session [%s] is active in another client (ChatGPT App). Auto-forking to restore full history..." session-id)
+                                  (agent-shell--update-bootstrapping-fragment
+                                   :state state
+                                   :block-id "active_writer_fork"
+                                   :body (agent-shell--make-boxed-message
+                                          :text (format "Notice: Session is in use by another client (ChatGPT App). Auto-forked to restore 100%% conversation history.")))
+                                  (agent-shell--initiate-session-fork-by-id
+                                   :session-id session-id
+                                   :shell-buffer (map-elt state :buffer)
+                                   :on-session-init (lambda ()
+                                                      (message "Restored conversation history from forked session."))))
+                              (when orig-on-failure
+                                (funcall orig-on-failure error-data raw-message))))))))))
+
+(with-eval-after-load 'agent-shell
+  (unless (advice-member-p #'my/agent-shell--auto-fork-on-lock-advice 'agent-shell--send-request)
+    (advice-add 'agent-shell--send-request :around #'my/agent-shell--auto-fork-on-lock-advice)))
+
 (defun my/agent-shell-switch-session (&optional arg)
   "Interactively browse, search, and switch to any historical agent session.
 Fetches all historical sessions (including conversations from 10+ days ago)
@@ -236,13 +279,21 @@ otherwise, open the historical session in a new dedicated buffer."
                                                sid)))
                            (cons label s)))
                        sorted))
-                     (selection (let ((ivy-initial-inputs-alist nil)
-                                      (ivy--default nil)
-                                      (this-command 'my/agent-shell-switch-session))
-                                  (completing-read "Switch to historical session: "
-                                                   (mapcar #'car choices)
-                                                   nil t nil nil nil)))
-                     (selected-session (cdr (assoc selection choices))))
+                     (input (let ((ivy-initial-inputs-alist nil)
+                                  (ivy--default nil)
+                                  (this-command 'my/agent-shell-switch-session))
+                              (completing-read "Switch to historical session (pick, search, or paste ID/URL): "
+                                               (mapcar #'car choices)
+                                               nil nil nil nil nil)))
+                     (uuid-match (when (and (stringp input)
+                                            (string-match "\\([0-9a-fA-F]\\{8\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{4\\}-[0-9a-fA-F]\\{12\\}\\)" input))
+                                   (match-string 1 input)))
+                     (selected-session
+                      (or (cdr (assoc input choices))
+                          (and uuid-match
+                               (seq-find (lambda (s) (equal (map-elt s 'sessionId) uuid-match)) sorted))
+                          (when uuid-match
+                            `((sessionId . ,uuid-match) (title . ,(format "Session %s" (substring uuid-match 0 8))))))))
                 (when selected-session
                   (let* ((sid (map-elt selected-session 'sessionId))
                          (title (map-elt selected-session 'title))
